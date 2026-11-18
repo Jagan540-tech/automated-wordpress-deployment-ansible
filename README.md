@@ -54,18 +54,10 @@ Built as the main project of a Cloud & DevOps training course (task: *"Main proj
 MariaDB 10.6.28, PHP 8.2.35, Nginx 1.30.6, phpMyAdmin 5.2.3.
 
 ## Architecture
-
-```mermaid
-flowchart LR
-    B["Browser"] -- "HTTPS 443" --> N
-    C["SFTP client"] -- "SFTP 22" --> S
-    subgraph EC2["AWS EC2 - Amazon Linux 2023"]
-        N["Nginx<br/>80 redirects to 443"] -- "unix socket" --> F["PHP-FPM<br/>runs as web_user"]
-        F -- "local socket" --> D[("MariaDB<br/>127.0.0.1 only")]
-        N --> W["Site files<br/>WordPress + phpMyAdmin"]
-        S["sshd :22<br/>chrooted internal-sftp"] --> W
-    end
-```
+ 
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Face Recognition Cloud and DevOps Project Architecture" width="100%">
+</p>
 
 **Request flow:** the browser connects to Nginx on 443 -> Nginx serves static files directly and hands `.php`
 requests to PHP-FPM over a unix socket -> PHP runs WordPress as the site user -> WordPress reads/writes MariaDB.
@@ -109,8 +101,8 @@ ssh -i your-key.pem ec2-user@<EC2_PUBLIC_IP>
 sudo dnf install -y ansible-core git
 
 # 3. Get the project
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
+git clone https://github.com/Jagan540-tech/automated-wordpress-deployment-ansible.git
+cd automated-wordpress-deployment-ansible
 
 # 4. Create your private configuration and edit it
 cp group_vars/all.yml.example group_vars/all.yml
@@ -223,6 +215,9 @@ curl -I http://<EC2_PUBLIC_IP>/                          # 301 -> https://...
 sudo ss -tlnp | grep -E ':(22|80|443|3306)\b'            # 3306 only on 127.0.0.1
 sftp <web_user>@<EC2_PUBLIC_IP>                          # then: cd <site_name>/public ; ls
 ```
+<p align="center">
+  <img src="docs/images/blog-post.png" alt="Deployed WordPress Blog Post on AWS EC2 over HTTPS" width="100%">
+</p>
 
 ## Security
 
