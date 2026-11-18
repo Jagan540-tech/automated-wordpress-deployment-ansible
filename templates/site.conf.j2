@@ -1,0 +1,62 @@
+# {{ ansible_managed }}
+# HTTP -> HTTPS redirect
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+
+    root {{ web_root }};
+    index index.php index.html;
+
+    ssl_certificate     /etc/nginx/ssl/{{ site_name }}.crt;
+    ssl_certificate_key /etc/nginx/ssl/{{ site_name }}.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header X-Content-Type-Options nosniff always;
+
+    client_max_body_size 64M;
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTPS on;
+        fastcgi_pass unix:/run/php-fpm/{{ web_user }}.sock;
+    }
+
+    # phpMyAdmin (installed outside the web root)
+    location ^~ /phpmyadmin/ {
+        alias /usr/share/phpmyadmin/;
+        index index.php;
+{% if pma_basic_auth_enabled %}
+        auth_basic "Restricted - phpMyAdmin";
+        auth_basic_user_file /etc/nginx/.htpasswd_pma;
+{% endif %}
+        location ~ \.php$ {
+            include fastcgi_params;
+            fastcgi_param SCRIPT_FILENAME $request_filename;
+            fastcgi_param HTTPS on;
+            fastcgi_pass unix:/run/php-fpm/{{ web_user }}.sock;
+        }
+    }
+    location = /phpmyadmin { return 301 /phpmyadmin/; }
+
+    location ~ /\.(ht|git) { deny all; }
+    location = /wp-config.php { deny all; }
+    location ~* /(?:uploads|files)/.*\.php$ { deny all; }
+    location = /favicon.ico { log_not_found off; access_log off; }
+}

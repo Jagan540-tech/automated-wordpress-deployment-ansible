@@ -1,0 +1,495 @@
+---
+# Task #52450 - WordPress on Nginx + MariaDB 10.6 + PHP 8 (Amazon Linux 2023)
+- name: Deploy WordPress (LEMP) with SFTP, phpMyAdmin and HTTPS
+  hosts: webservers
+  become: true
+
+  vars:
+    wp_cli: "{{ ['runuser', '-u', web_user, '--', '/usr/local/bin/wp', '--path=' + web_root] }}"
+
+  tasks:
+    # ------------------------------------------------------------------
+    # 0. Work out the website address (EC2 public IP when no domain)
+    # ------------------------------------------------------------------
+    - name: Detect website address
+      when: site_host | length == 0
+      tags: [always]
+      block:
+        - name: Get IMDSv2 token
+          ansible.builtin.uri:
+            url: http://169.254.169.254/latest/api/token
+            method: PUT
+            headers:
+              X-aws-ec2-metadata-token-ttl-seconds: "300"
+            return_content: true
+          register: imds_token
+          ignore_errors: true
+
+        - name: Get public IPv4 from EC2 metadata
+          ansible.builtin.uri:
+            url: http://169.254.169.254/latest/meta-data/public-ipv4
+            headers:
+              X-aws-ec2-metadata-token: "{{ imds_token.content }}"
+            return_content: true
+          register: imds_ip
+          ignore_errors: true
+          when: imds_token is succeeded
+
+        - name: Set site_host
+          ansible.builtin.set_fact:
+            site_host: "{{ imds_ip.content | default(ansible_default_ipv4.address) }}"
+
+    - name: Show the address that will be used
+      ansible.builtin.debug:
+        msg: "Website address: {{ site_host }}"
+      tags: [always]
+
+    # ------------------------------------------------------------------
+    # 1. Packages
+    # ------------------------------------------------------------------
+    - name: Install base tools
+      ansible.builtin.dnf:
+        name: [tar, gzip, unzip, openssl]
+        state: present
+      tags: [packages]
+
+    - name: Add the official MariaDB repository
+      ansible.builtin.template:
+        src: mariadb.repo.j2
+        dest: /etc/yum.repos.d/mariadb.repo
+        mode: "0644"
+      when: mariadb_install_source == 'mariadb_org'
+      tags: [packages, mariadb]
+
+    - name: Install MariaDB server and client
+      ansible.builtin.dnf:
+        name: "{{ ['MariaDB-server', 'MariaDB-client'] if mariadb_install_source == 'mariadb_org' else ['mariadb1011', 'mariadb1011-server'] }}"
+        state: present
+      tags: [packages, mariadb]
+
+    - name: Install Nginx and PHP
+      ansible.builtin.dnf:
+        name:
+          - nginx
+          - "php{{ php_version }}-cli"
+          - "php{{ php_version }}-fpm"
+          - "php{{ php_version }}-mysqlnd"
+          - "php{{ php_version }}-gd"
+          - "php{{ php_version }}-mbstring"
+          - "php{{ php_version }}-xml"
+          - "php{{ php_version }}-intl"
+          - "php{{ php_version }}-opcache"
+        state: present
+      tags: [packages, nginx, php]
+
+    # ------------------------------------------------------------------
+    # 2. MariaDB: configure, secure, create WordPress database
+    # ------------------------------------------------------------------
+    - name: MariaDB custom configuration
+      ansible.builtin.template:
+        src: mariadb-custom.cnf.j2
+        dest: /etc/my.cnf.d/99-custom.cnf
+        mode: "0644"
+      notify: restart mariadb
+      tags: [mariadb]
+
+    - name: Start and enable MariaDB
+      ansible.builtin.service:
+        name: mariadb
+        state: started
+        enabled: true
+      tags: [mariadb]
+
+    - name: Apply MariaDB config changes now
+      ansible.builtin.meta: flush_handlers
+
+    - name: Secure MariaDB and create WordPress database and user
+      ansible.builtin.command: mysql -u root
+      args:
+        stdin: |
+          DROP USER IF EXISTS ''@'localhost';
+          DROP USER IF EXISTS ''@'%';
+          DROP DATABASE IF EXISTS test;
+          CREATE DATABASE IF NOT EXISTS `{{ db_name }}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+          CREATE USER IF NOT EXISTS '{{ db_user }}'@'localhost' IDENTIFIED BY '{{ db_password }}';
+          ALTER USER '{{ db_user }}'@'localhost' IDENTIFIED BY '{{ db_password }}';
+          CREATE USER IF NOT EXISTS '{{ db_user }}'@'127.0.0.1' IDENTIFIED BY '{{ db_password }}';
+          ALTER USER '{{ db_user }}'@'127.0.0.1' IDENTIFIED BY '{{ db_password }}';
+          GRANT ALL PRIVILEGES ON `{{ db_name }}`.* TO '{{ db_user }}'@'localhost';
+          GRANT ALL PRIVILEGES ON `{{ db_name }}`.* TO '{{ db_user }}'@'127.0.0.1';
+          FLUSH PRIVILEGES;
+      changed_when: false
+      no_log: true
+      tags: [mariadb]
+
+    # ------------------------------------------------------------------
+    # 3. Linux user, home directory and web root
+    # ------------------------------------------------------------------
+    - name: Create password hash for the SFTP user
+      ansible.builtin.command: openssl passwd -6 -stdin
+      args:
+        stdin: "{{ web_user_password }}"
+      register: web_user_hash
+      changed_when: false
+      no_log: true
+      tags: [user]
+
+    - name: Create the website user (no shell, SFTP only)
+      ansible.builtin.user:
+        name: "{{ web_user }}"
+        home: "{{ web_home }}"
+        create_home: false
+        shell: /sbin/nologin
+        password: "{{ web_user_hash.stdout }}"
+        update_password: on_create
+      tags: [user]
+
+    - name: Home directory (must be root-owned for SFTP chroot)
+      ansible.builtin.file:
+        path: "{{ web_home }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags: [user]
+
+    - name: Website directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ web_user }}"
+        group: "{{ web_user }}"
+        mode: "0755"
+      loop:
+        - "{{ site_root }}"
+        - "{{ web_root }}"
+      tags: [user]
+
+    # ------------------------------------------------------------------
+    # 4. PHP-FPM (runs as the website user)
+    # ------------------------------------------------------------------
+    - name: PHP-FPM pool for the website user
+      ansible.builtin.template:
+        src: php-fpm-pool.conf.j2
+        dest: "/etc/php-fpm.d/{{ web_user }}.conf"
+        mode: "0644"
+      notify: restart php-fpm
+      tags: [php]
+
+    - name: Remove the default www pool
+      ansible.builtin.file:
+        path: /etc/php-fpm.d/www.conf
+        state: absent
+      notify: restart php-fpm
+      tags: [php]
+
+    - name: PHP custom settings
+      ansible.builtin.template:
+        src: php-custom.ini.j2
+        dest: /etc/php.d/99-custom.ini
+        mode: "0644"
+      notify: restart php-fpm
+      tags: [php]
+
+    - name: PHP session directory for the website user
+      ansible.builtin.file:
+        path: "/var/lib/php/session-{{ web_user }}"
+        state: directory
+        owner: "{{ web_user }}"
+        group: "{{ web_user }}"
+        mode: "0700"
+      tags: [php]
+
+    - name: Start and enable PHP-FPM
+      ansible.builtin.service:
+        name: php-fpm
+        state: started
+        enabled: true
+      tags: [php]
+
+    # ------------------------------------------------------------------
+    # 5. SFTP (chrooted to the user's home)
+    # ------------------------------------------------------------------
+    - name: Configure SFTP-only chroot for the website user
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} ANSIBLE MANAGED SFTP BLOCK"
+        block: |
+          Match User {{ web_user }}
+              ChrootDirectory {{ web_home }}
+              ForceCommand internal-sftp
+              PasswordAuthentication yes
+              AllowTcpForwarding no
+              X11Forwarding no
+              PermitTTY no
+        validate: /usr/sbin/sshd -t -f %s
+      notify: restart sshd
+      tags: [sftp]
+
+    # ------------------------------------------------------------------
+    # 6. phpMyAdmin
+    # ------------------------------------------------------------------
+    - name: phpMyAdmin directory
+      ansible.builtin.file:
+        path: /usr/share/phpmyadmin
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags: [phpmyadmin]
+
+    - name: Download and extract phpMyAdmin
+      ansible.builtin.unarchive:
+        src: "{{ phpmyadmin_url }}"
+        dest: /usr/share/phpmyadmin
+        remote_src: true
+        extra_opts: ["--strip-components=1"]
+        creates: /usr/share/phpmyadmin/index.php
+      tags: [phpmyadmin]
+
+    - name: phpMyAdmin temp directory
+      ansible.builtin.file:
+        path: /var/lib/phpmyadmin/tmp
+        state: directory
+        owner: "{{ web_user }}"
+        group: "{{ web_user }}"
+        mode: "0700"
+      tags: [phpmyadmin]
+
+    - name: phpMyAdmin configuration
+      ansible.builtin.template:
+        src: phpmyadmin-config.inc.php.j2
+        dest: /usr/share/phpmyadmin/config.inc.php
+        owner: "{{ web_user }}"
+        group: "{{ web_user }}"
+        mode: "0640"
+        force: false
+      tags: [phpmyadmin]
+
+    - name: Check for existing phpMyAdmin password file
+      ansible.builtin.stat:
+        path: /etc/nginx/.htpasswd_pma
+      register: pma_htpasswd
+      tags: [phpmyadmin]
+
+    - name: Create phpMyAdmin basic-auth hash
+      ansible.builtin.command: openssl passwd -apr1 -stdin
+      args:
+        stdin: "{{ pma_basic_password }}"
+      register: pma_hash
+      changed_when: false
+      no_log: true
+      when: pma_basic_auth_enabled and not pma_htpasswd.stat.exists
+      tags: [phpmyadmin]
+
+    - name: Write phpMyAdmin basic-auth file
+      ansible.builtin.copy:
+        content: "{{ pma_basic_user }}:{{ pma_hash.stdout }}\n"
+        dest: /etc/nginx/.htpasswd_pma
+        owner: root
+        group: nginx
+        mode: "0640"
+      no_log: true
+      when: pma_basic_auth_enabled and not pma_htpasswd.stat.exists
+      tags: [phpmyadmin]
+
+    # ------------------------------------------------------------------
+    # 7. SSL (self-signed, because there is no domain name)
+    # ------------------------------------------------------------------
+    - name: Create SSL directory
+      ansible.builtin.file:
+        path: /etc/nginx/ssl
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags: [ssl]
+
+    - name: Generate self-signed certificate
+      ansible.builtin.command: >
+        openssl req -x509 -nodes -newkey rsa:2048 -days {{ ssl_days }}
+        -keyout /etc/nginx/ssl/{{ site_name }}.key
+        -out /etc/nginx/ssl/{{ site_name }}.crt
+        -subj "/C=IN/ST=Kerala/O={{ site_name }}/CN={{ site_host }}"
+        -addext "subjectAltName={{ 'IP:' if site_host is match('^[0-9.]+$') else 'DNS:' }}{{ site_host }}"
+      args:
+        creates: "/etc/nginx/ssl/{{ site_name }}.crt"
+      tags: [ssl]
+
+    - name: Protect the private key
+      ansible.builtin.file:
+        path: "/etc/nginx/ssl/{{ site_name }}.key"
+        owner: root
+        group: root
+        mode: "0600"
+      tags: [ssl]
+
+    # ------------------------------------------------------------------
+    # 8. Nginx
+    # ------------------------------------------------------------------
+    - name: Main nginx.conf
+      ansible.builtin.template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+        mode: "0644"
+        backup: true
+      notify: restart nginx
+      tags: [nginx]
+
+    - name: Website server block
+      ansible.builtin.template:
+        src: site.conf.j2
+        dest: "/etc/nginx/conf.d/{{ site_name }}.conf"
+        mode: "0644"
+      notify: restart nginx
+      tags: [nginx]
+
+    - name: Test nginx configuration
+      ansible.builtin.command: nginx -t
+      changed_when: false
+      tags: [nginx]
+
+    - name: Start and enable nginx
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+      tags: [nginx]
+
+    # ------------------------------------------------------------------
+    # 9. WordPress files
+    # ------------------------------------------------------------------
+    - name: Download and extract WordPress
+      ansible.builtin.unarchive:
+        src: https://wordpress.org/latest.tar.gz
+        dest: "{{ web_root }}"
+        remote_src: true
+        extra_opts: ["--strip-components=1"]
+        owner: "{{ web_user }}"
+        group: "{{ web_user }}"
+        creates: "{{ web_root }}/wp-load.php"
+      tags: [wordpress]
+
+    - name: Create wp-config.php (only once)
+      ansible.builtin.template:
+        src: wp-config.php.j2
+        dest: "{{ web_root }}/wp-config.php"
+        owner: "{{ web_user }}"
+        group: "{{ web_user }}"
+        mode: "0640"
+        force: false
+      tags: [wordpress]
+
+    - name: Make sure wp-config.php is private to the site user
+      ansible.builtin.file:
+        path: "{{ web_root }}/wp-config.php"
+        owner: "{{ web_user }}"
+        group: "{{ web_user }}"
+        mode: "0640"
+      tags: [wordpress]
+
+    - name: Install WP-CLI
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+        dest: /usr/local/bin/wp
+        mode: "0755"
+      tags: [wordpress]
+
+    # ------------------------------------------------------------------
+    # 10. WordPress install, customisation and blog post
+    # ------------------------------------------------------------------
+    - name: WordPress setup with WP-CLI
+      environment:
+        HOME: /tmp
+        WP_CLI_CACHE_DIR: /tmp/.wp-cli-cache
+      tags: [wordpress, wpsetup]
+      block:
+        - name: Check if WordPress is already installed
+          ansible.builtin.command:
+            argv: "{{ wp_cli + ['core', 'is-installed'] }}"
+          register: wp_installed
+          failed_when: false
+          changed_when: false
+
+        - name: Run the WordPress installer
+          ansible.builtin.command:
+            argv: "{{ wp_cli + ['core', 'install',
+                     '--url=https://' + site_host,
+                     '--title=' + wp_title,
+                     '--admin_user=' + wp_admin_user,
+                     '--admin_password=' + wp_admin_password,
+                     '--admin_email=' + wp_admin_email,
+                     '--skip-email'] }}"
+          no_log: true
+          when: wp_installed.rc != 0
+
+        - name: WordPress customisations (tagline, timezone, permalinks, cleanup)
+          ansible.builtin.command:
+            argv: "{{ wp_cli + item }}"
+          loop:
+            - ['option', 'update', 'blogdescription', "{{ wp_tagline }}"]
+            - ['option', 'update', 'timezone_string', "{{ wp_timezone }}"]
+            - ['rewrite', 'structure', '/%postname%/']
+            - ['post', 'delete', '1', '2', '--force']
+            - ['plugin', 'delete', 'hello', 'akismet']
+          failed_when: false
+          changed_when: false
+
+        - name: Copy blog post content
+          ansible.builtin.copy:
+            src: blog-post.html
+            dest: /tmp/blog-post.html
+            mode: "0644"
+
+        - name: Check if the blog post already exists
+          ansible.builtin.command:
+            argv: "{{ wp_cli + ['post', 'list', '--post_type=post', '--name=' + wp_post_slug, '--format=ids'] }}"
+          register: wp_post_exists
+          changed_when: false
+
+        - name: Publish the personal blog post
+          ansible.builtin.command:
+            argv: "{{ wp_cli + ['post', 'create', '/tmp/blog-post.html',
+                     '--post_title=' + wp_post_title,
+                     '--post_name=' + wp_post_slug,
+                     '--post_status=publish',
+                     '--post_author=1'] }}"
+          when: wp_post_exists.stdout | trim | length == 0
+
+    # ------------------------------------------------------------------
+    # 11. Credentials summary
+    # ------------------------------------------------------------------
+    - name: Save credentials on the server (root only)
+      ansible.builtin.template:
+        src: credentials.txt.j2
+        dest: /root/task52450-credentials.txt
+        owner: root
+        group: root
+        mode: "0600"
+      tags: [always]
+
+    - name: Show credentials to submit
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.template', 'credentials.txt.j2').splitlines() }}"
+      tags: [always]
+
+  handlers:
+    - name: restart mariadb
+      ansible.builtin.service:
+        name: mariadb
+        state: restarted
+
+    - name: restart php-fpm
+      ansible.builtin.service:
+        name: php-fpm
+        state: restarted
+
+    - name: restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
+    - name: restart sshd
+      ansible.builtin.service:
+        name: sshd
+        state: restarted

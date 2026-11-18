@@ -1,0 +1,28 @@
+<?php
+/* {{ ansible_managed }} */
+define( 'DB_NAME',     '{{ db_name }}' );
+define( 'DB_USER',     '{{ db_user }}' );
+define( 'DB_PASSWORD', '{{ db_password }}' );
+define( 'DB_HOST',     'localhost' );
+define( 'DB_CHARSET',  'utf8mb4' );
+define( 'DB_COLLATE',  '' );
+
+{% for k in ['AUTH_KEY','SECURE_AUTH_KEY','LOGGED_IN_KEY','NONCE_KEY','AUTH_SALT','SECURE_AUTH_SALT','LOGGED_IN_SALT','NONCE_SALT'] %}
+define( '{{ k }}', '{{ lookup('password', '/dev/null length=64 chars=ascii_letters,digits') }}' );
+{% endfor %}
+
+$table_prefix = 'wp_';
+
+/* Works with whatever IP/hostname you use to reach the server */
+$wp_host = isset( $_SERVER['HTTP_HOST'] ) ? $_SERVER['HTTP_HOST'] : '{{ site_host }}';
+define( 'WP_HOME',    'https://' . $wp_host );
+define( 'WP_SITEURL', 'https://' . $wp_host );
+define( 'FORCE_SSL_ADMIN', true );
+define( 'FS_METHOD', 'direct' );
+define( 'DISALLOW_FILE_EDIT', true );
+define( 'WP_DEBUG', false );
+
+if ( ! defined( 'ABSPATH' ) ) {
+    define( 'ABSPATH', __DIR__ . '/' );
+}
+require_once ABSPATH . 'wp-settings.php';

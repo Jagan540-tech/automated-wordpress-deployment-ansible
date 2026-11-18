@@ -1,0 +1,4 @@
+# Force Unix line endings so templates and playbooks work on Linux
+# even when the repository is cloned or edited on Windows.
+* text=auto eol=lf
+*.pem binary

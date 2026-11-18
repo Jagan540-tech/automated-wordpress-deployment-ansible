@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------
+# Secrets - NEVER commit these
+# ---------------------------------------------------------------
+# Your real variables (copy of group_vars/all.yml.example)
+group_vars/all.yml
+group_vars/*vault*
+# Real server IP / key path
+inventory/hosts.ini
+# Keys, certificates, tokens
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.env
+.env.*
+.vault_pass*
+*vault-password*
+.htpasswd*
+# Generated credential dumps (e.g. task-credentials.txt).
+# The template templates/credentials.txt.j2 is NOT matched and stays tracked.
+*credentials*.txt
+*credentials*.csv
+*credentials*.json
+*credentials*.pdf
+
+# ---------------------------------------------------------------
+# Generated / local files
+# ---------------------------------------------------------------
+*.retry
+*.log
+*.zip
+*.bak
+*.tar.gz
+.ansible/
+
+# ---------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+__pycache__/

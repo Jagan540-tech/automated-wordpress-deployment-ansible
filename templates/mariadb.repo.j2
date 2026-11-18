@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[mariadb]
+name = MariaDB {{ mariadb_version }}
+baseurl = https://rpm.mariadb.org/{{ mariadb_version }}/rhel/9/$basearch
+gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB
+gpgcheck = 1
+enabled = 1
+module_hotfixes = 1

@@ -1,0 +1,60 @@
+---
+# =====================================================================
+#  TEMPLATE - copy this file and edit the copy:
+#      cp group_vars/all.yml.example group_vars/all.yml
+#  group_vars/all.yml is listed in .gitignore on purpose, so your real
+#  passwords are never committed. NEVER put real secrets in this example.
+#  Use strong, unique passwords (12+ chars). Avoid the characters ' " \
+# =====================================================================
+# ===================== EDIT THESE BEFORE RUNNING =====================
+
+# --- Website / Linux user -------------------------------------------
+web_user: "webuser"                 # Linux user (SFTP user) created under /home
+web_user_password: "Change_Me_SFTP_123"
+site_name: "myblog"               # website folder name
+# Root directory becomes: /home/<web_user>/<site_name>/public
+
+# Leave empty to auto-detect the EC2 public IP (no domain needed).
+# If you later get a domain, put it here (e.g. "blog.example.com").
+site_host: ""
+
+# --- Database ---------------------------------------------------------
+db_name: "wordpress"
+db_user: "wpuser"
+db_password: "Change_Me_DB_123"   # avoid the characters ' " \ in passwords
+
+# --- phpMyAdmin -------------------------------------------------------
+pma_basic_auth_enabled: true      # extra login popup in front of phpMyAdmin
+pma_basic_user: "pmaadmin"
+pma_basic_password: "Change_Me_PMA_123"
+
+# --- WordPress --------------------------------------------------------
+wp_title: "My Blog"
+wp_tagline: "Notes on Linux, DevOps and IoT"
+wp_admin_user: "wpadmin"
+wp_admin_password: "Change_Me_WP_123"
+wp_admin_email: "you@example.com"
+wp_timezone: "Asia/Kolkata"
+wp_post_title: "Hello, I'm V Jagan"
+wp_post_slug: "about-me"
+
+# ===================== ADVANCED (usually leave) ======================
+
+# Task says "MySQL 10.6" - 10.6 is a MariaDB version number.
+#   mariadb_org -> MariaDB 10.6 from the official MariaDB repo (matches the task)
+#   amazon      -> MariaDB 10.11 from Amazon Linux's own repo (fallback if 10.6 repo fails)
+mariadb_install_source: "mariadb_org"
+mariadb_version: "10.6"
+
+php_version: "8.2"                # Amazon Linux 2023 ships PHP 8.2
+
+# Self-signed certificate (free, works without a domain, browser shows a warning)
+ssl_days: 365
+
+# phpMyAdmin download
+phpmyadmin_url: "https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz"
+
+# ---- derived paths (do not edit) ----
+web_home: "/home/{{ web_user }}"
+site_root: "/home/{{ web_user }}/{{ site_name }}"
+web_root: "/home/{{ web_user }}/{{ site_name }}/public"
